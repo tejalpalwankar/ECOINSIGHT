@@ -1,0 +1,530 @@
+```{r}
+library(arrow)
+library(tidyverse)
+
+# Read the Parquet file from the remote URL
+house_info <- read_parquet("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/static_house_info.parquet")
+
+head(house_info)
+```
+```{r}
+house_info <- subset(house_info, in.county %in% c("G4500010", "G4500810", "G4500850"))
+dim(house_info)
+
+house_info <- subset(house_info, in.sqft > 1690 & in.sqft < 3301)
+dim(house_info)
+#house_info <- house_info[house_info$in.county == "G4500010" house_info$in.county == "G4500810" | house_info$in.county == "G4500850" ]
+#dim(house_info)
+```
+
+```{r} 
+head(house_info)
+```
+
+```{r}
+#repeat_times <- 744
+
+#repeated_house_info <- house_info[rep(seq_len(nrow(house_info)), each = repeat_times), ]
+
+#rownames(repeated_house_info) <- NULL
+
+#dim(repeated_house_info)
+```
+
+```{r}
+weather_data_G4500010 <- read_csv("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/G4500010.csv")
+weather_info_july_G4500010 <- weather_data_G4500010 %>%
+  filter(month(date_time) == 7)
+nrow(weather_info_july_G4500010)
+weather_data_G4500810 <- read_csv("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/G4500810.csv")
+weather_info_july_G4500810 <- weather_data_G4500810 %>%
+  filter(month(date_time) == 7)
+nrow(weather_info_july_G4500810)
+weather_data_G4500850 <- read_csv("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/weather/2023-weather-data/G4500850.csv")
+weather_info_july_G4500850 <- weather_data_G4500850 %>%
+  filter(month(date_time) == 7)
+nrow(weather_info_july_G4500850)
+```
+
+```{r}
+# This chunk is for combining the static house and weather datasets. It will match the county from weather data to static house
+df <- data.frame()
+for (county in house_info$in.county) {
+  if (county == "G4500010") {
+    df <- rbind(df, weather_info_july_G4500010)
+  }
+  else if (county == "G4500810") {
+    df <- rbind(df, weather_info_july_G4500810)
+  }
+  else {
+    df <- rbind(df, weather_info_july_G4500850)
+  }
+}
+
+nrow(df)
+```
+```{r}
+# rep(seq_len(nrow(house_info)), each = repeat_times) generates a sequence of integers where each row number in house_info is repeated 744 times, essentially expanding each row to represent each hour of a month.
+repeat_times <- 744
+
+
+repeated_house_info <- house_info[rep(seq_len(nrow(house_info)), each = repeat_times), ]
+
+rownames(repeated_house_info) <- NULL
+
+dim(repeated_house_info)
+```
+```{r}
+dim(df)
+```
+
+```{r}
+house_weather_merged_df <- cbind(repeated_house_info, df)
+dim(house_weather_merged_df)
+```
+
+```{r}
+
+# It will loop in the building ids to get data from the energy dataset and will filter by month 
+t_df <- data.frame()
+for (bldg_id in unique(house_info$bldg_id)) {
+    df1 <- read_parquet(paste0("https://intro-datascience.s3.us-east-2.amazonaws.com/SC-data/2023-houseData/",bldg_id,".parquet"))
+    df1 <- df1 %>% filter(month(time) == 7)
+    t_df <- rbind(t_df, df1)
+}
+    t_df$time <- as.POSIXct(t_df$time) 
+    t_df$month <- month(t_df$time)
+#df$total_energy <- rowSums(df)
+```
+
+```{r}
+# THis chunk is to calculate the combined energy consumption of the dataset 
+columns_to_sum <- setdiff(names(t_df), c("time"))
+t_df$total_energy <- rowSums(t_df[columns_to_sum])
+dim(t_df)
+```
+
+```{r}
+# IT combines the weather and energy data
+
+complete_merged_data <- cbind(house_weather_merged_df, total_energy = t_df$total_energy,
+                              time = t_df$time,
+                        out.electricity.heating.energy_consumption = t_df$out.electricity.heating.energy_consumption,
+                        out.electricity.cooling.energy_consumption = t_df$out.electricity.cooling.energy_consumption)
+dim(complete_merged_data)
+```
+
+```{r}
+head(complete_merged_data)
+```
+
+```{r}
+hour <- as.integer(format(complete_merged_data$date_time, "%H"))
+
+# Define a function to map hour to quarter
+map_hour_to_quarter <- function(hour) {
+  if (hour >= 0 && hour < 6) {
+    return("Q1")
+  } else if (hour >= 6 && hour < 12) {
+    return("Q2")
+  } else if (hour >= 12 && hour < 18) {
+    return("Q3")
+  } else {
+    return("Q4")
+  }
+}
+
+complete_merged_data$quarter <- sapply(hour, map_hour_to_quarter)
+
+# Print the updated dataframe
+dim(complete_merged_data)
+```
+```{r}
+#Calculate the total consumption of cooling and plot based on quarters
+
+total_consumption_cooling <- complete_merged_data %>%
+  group_by(time, quarter) %>%
+  summarise(total_consumption_cooling = sum(out.electricity.cooling.energy_consumption), .groups = "drop")
+
+total_consumption_cooling_sum <- total_consumption_cooling %>%
+  group_by(quarter) %>%
+  summarise(total_consumption_cooling = sum(total_consumption_cooling))
+
+library(ggplot2)
+
+# Plotting total consumption across quarters
+ggplot(total_consumption_cooling, aes(x = quarter, y = total_consumption_cooling)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Total Consumption Over Time- Cooling (July)",
+       x = "Time of the day (Quarters)",
+       y = "Total Cooling Consumption in July in kWh")
+
+```
+
+```{r}
+#Total consumption of heating
+total_consumption_heating <- complete_merged_data %>%
+  group_by(time, quarter) %>%
+  summarise(total_consumption_heating = sum(out.electricity.heating.energy_consumption), .groups = "drop")
+
+total_consumption_heating_sum <- total_consumption_heating %>%
+  group_by(quarter) %>%
+  summarise(total_consumption_heating = sum(total_consumption_heating))
+
+library(ggplot2)
+
+# Plotting total consumption across quarters
+ggplot(total_consumption_heating, aes(x = quarter, y = total_consumption_heating)) +
+  geom_bar(stat = "identity", fill = "red") +
+  labs(title = "Total Consumption Over Time - Heating (July)",
+      x = "Time of the Day - Quarters",
+       y = "Total heating Consumption in July kWh")
+```
+
+```{r}
+library(ggplot2)
+
+ 
+# Bar chart: Building ID vs. Total Energy Consumption (July)
+ggplot(complete_merged_data, aes(x = factor(bldg_id), y = total_energy)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(x = "Building ID in County", y = "Total Energy Consumption in July (kWh)") +
+  ggtitle("Building ID vs. Total Energy Consumption (July)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+```{r}
+# Define colors for each building type
+colors <- c("Wood Frame" = "lightyellow", "Steel Frame" = "black", "Brick" = "red")
+ 
+ggplot(complete_merged_data, aes(x = factor(in.geometry_wall_type), y = total_energy)) +
+  geom_bar(stat = "identity", aes(fill = factor(in.geometry_wall_type)), color = NA, position = "identity") + # Add position = "identity"
+  scale_fill_manual(values = colors) + # Apply custom colors
+  labs(x = "Building Type (Materials)", y = "Total Energy Consumption in July (kWh)") +
+  ggtitle("Building Type vs. Total Energy Consumption in July") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Rotate x-axis labels for better readability
+  scale_y_continuous(labels = scales::comma) # Remove scientific notation from y-axis
+```
+
+
+
+```{r}
+# Calculate average energy consumption by vintage year
+average_energy_by_vintage <- complete_merged_data %>%
+  group_by(in.vintage) %>%
+  summarize(avg_energy = mean(total_energy, na.rm = TRUE))
+ 
+# Visualize the results using ggplot2
+library(ggplot2)
+ggplot(average_energy_by_vintage, aes(x = in.vintage, y = avg_energy)) +
+  geom_col(fill = "darkgreen") + # Use geom_col() instead of geom_bar(stat = "identity")
+  labs(title = "Average Energy Consumption by Building Age",
+       x = "Building Age",
+       y = "Average Energy Consumption (kWh)") +
+  ylim(0, max(average_energy_by_vintage$avg_energy) * 1.2)  # Adjust the y-axis limits to be 20% larger than the maximum value
+
+```
+
+```{r}
+write.csv(complete_merged_data, file = "C:/Users/unnat/OneDrive/Desktop/IDS/mergedfilefinal1.csv", row.names = FALSE)
+```
+
+```{r}
+library(tidyverse)
+final_df <- read.csv("C:/Users/unnat/OneDrive/Desktop/IDS/mergedfilefinal1.csv")
+```
+
+```{r}
+# Removing the columns with one unique value
+unique_counts <- sapply(final_df, function(x) length(unique(x)))
+
+# Get the column indices where the number of unique values is equal to 1
+cols_to_remove <- which(unique_counts == 1)
+
+# Subset the dataframe to exclude columns with only one unique value
+final_df_after_removing_uniques <- final_df[, -cols_to_remove]
+
+dim(final_df_after_removing_uniques)
+```
+```{r}
+# selecting the numerical value
+df_numerical <- final_df_after_removing_uniques %>%
+  select(where(is.numeric))
+
+dim(df_numerical)
+```
+```{r}
+# Performing encoding, converting the categorical variables to numerical ones
+library(caret)
+categorical_columns <- c("in.federal_poverty_level", "in.geometry_wall_type",
+                         "in.geometry_wall_exterior_finish", 
+                         "in.misc_pool","in.ceiling_fan",
+                         "in.insulation_slab","in.orientation",
+                         "in.windows",
+                         "in.usage_level","in.refrigerator","in.water_heater_efficiency",
+                         "quarter","in.dishwasher","in.roof_material")
+
+# Create dummy variables for categorical columns
+df_categorical_dummies <- final_df_after_removing_uniques %>%
+  select(all_of(categorical_columns)) %>%
+  dummyVars(~., data = .) %>%
+  predict(final_df_after_removing_uniques)
+
+# Combine numerical and categorical variables
+final_df_with_dummies <- cbind(df_numerical, df_categorical_dummies)
+
+
+```
+
+```{r}
+# Running the linear regression
+lm_model1 <- lm(total_energy ~ ., data = final_df_with_dummies)
+summary(lm_model1)
+```
+
+```{r}
+# Running the decision tree model 
+library(rpart)
+tree_model <- rpart(total_energy ~ ., data = final_df_with_dummies)
+summary(tree_model)
+
+```
+
+```{r}
+# THis is the chunk where the temperature increases by 5 degrees
+temp_incr <- final_df_with_dummies
+temp_incr$Dry.Bulb.Temperature...C. <- 
+  final_df_with_dummies$Dry.Bulb.Temperature...C.+ 5
+```
+
+```{r}
+# Decision tree model 
+library(caret)
+
+splitIndex <- createDataPartition(final_df_with_dummies$total_energy, p = 0.8, list = FALSE)
+
+train_data <- final_df_with_dummies[splitIndex, ]
+test_data <- final_df_with_dummies[-splitIndex, ]
+library(rpart)
+tree_model <- rpart(total_energy ~ ., data = train_data, method = "anova")
+predictions <- predict(tree_model, newdata = train_data)
+TSS <- sum((train_data$total_energy - mean(train_data$total_energy))^2)
+
+# Calculate RSS
+RSS <- sum((train_data$total_energy - predictions)^2)
+
+# Calculate R-squared
+rsquared <- 1 - (RSS / TSS)
+
+# Print R-squared value
+print(rsquared)
+```
+```{r}
+predicted_total_energy <- predict(lm_model1, newdata = temp_incr)
+temp_incr$predicted_total_energy <- predicted_total_energy
+```
+
+```{r}
+
+library(Metrics) # For calculating RMSE
+
+# Calculate RMSE
+actual_total_energy <- temp_incr$total_energy
+predicted_total_energy <- temp_incr$predicted_total_energy
+
+# Calculate the Root Mean Square Error
+rmse <- rmse(actual_total_energy, predicted_total_energy)
+
+# Print RMSE
+cat("Root Mean Square Error (RMSE):", rmse, "\n")
+acceptable_error_margin <- 0.05
+
+# Calculate the absolute difference between actual and predicted total energy
+absolute_differences <- abs(actual_total_energy - predicted_total_energy)
+
+# Calculate the percentage differences
+percentage_differences <- absolute_differences / actual_total_energy
+
+# Calculate the number of observations within the acceptable error margin
+correct_predictions <- sum(percentage_differences <= acceptable_error_margin)
+
+# Calculate the confidence rate as the proportion of correct predictions
+confidence_rate <- (correct_predictions / length(actual_total_energy)) * 100
+
+# Print the confidence rate
+cat("Confidence Rate (within 5% margin of error):", confidence_rate, "%\n")
+
+sum_total1 <- sum(temp_incr$predicted_total_energy)
+sum_total2 <- sum(temp_incr$total_energy)
+
+percent_change <- ((sum_total1 - sum_total2) / sum_total2) * 100
+percent_change
+```
+```{r}
+temp_incr$quarter <- ifelse(temp_incr$quarterQ1 == 1, "Q1",
+                             ifelse(temp_incr$quarterQ2 == 1, "Q2",
+                                    ifelse(temp_incr$quarterQ3 == 1, "Q3",
+                                           ifelse(temp_incr$quarterQ4 == 1, "Q4", NA))))
+# Determine the maximum value of total_energy and predicted_total_energy
+max_total_energy <- max(complete_merged_data$total_energy, na.rm = TRUE)
+max_predicted_total_energy <- max(temp_incr$predicted_total_energy, na.rm = TRUE)
+
+# Set the same y-axis limits for both plots
+y_limits <- range(0, max_total_energy, max_predicted_total_energy)
+
+# Plot 1: Building ID vs. Total Energy Consumption before temperature increase
+ggplot(complete_merged_data, aes(x = factor(bldg_id), y = total_energy))+
+  geom_line() +
+  labs(x = "Building ID", y = "Total Energy Consumption in July") +
+  ggtitle("Building ID vs. Total Energy Consumption (July)") +
+  ylim(y_limits) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# Plot 2: Building ID vs. Total Predicted Energy Consumption after temperature increase
+ggplot(temp_incr, aes(x = factor(bldg_id), y = predicted_total_energy)) +
+  geom_line() +
+  labs(x = "Building ID", y = "Total Predicted Energy Consumption in July") +
+  ggtitle("Building ID vs. Total Predicted Energy Consumption in July(After temperature increase)")+
+  ylim(y_limits)  +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# Assuming you've already combined the data frames
+
+# Change the angle of the x-axis text and only show a subset of labels
+# Calculate the number of buildings to decide on an appropriate thinning
+building_count <- length(unique(combined_data$bldg_id))
+
+# Choose a step size that's appropriate based on the number of buildings you have
+# For instance, if you have 100 building IDs, you might want to show every 10th label
+step_size <- max(1, floor(building_count / 10))
+
+# Create a new factor for the labels where we only keep every nth label
+# This assumes the building IDs are numeric and sorted
+thin_labels <- function(labels, step) {
+  keep <- seq_along(labels) %% step == 1
+  return(ifelse(keep, labels, ""))
+}
+
+# Now let's create a stacked bar chart with adjusted labels
+p <- ggplot(combined_data, aes(x = bldg_id, y = total_energy, fill = scenario)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_x_discrete(labels = function(labels) thin_labels(labels, step_size)) +
+  labs(x = "Building ID", 
+       y = "Total Energy Consumption kWH", 
+       fill = "Scenario", 
+       title = "Energy Consumption Before and After Temperature Increase") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        plot.title = element_text(hjust = 0.5),
+        legend.title = element_blank())
+
+# Print the plot with adjustments
+print(p)
+
+```
+
+
+
+
+
+
+
+```{r}
+# Plot 1: Total Energy Consumption vs. Square feet before temperature increase
+ggplot(complete_merged_data, aes(x = factor(in.sqft), y = total_energy)) +
+  geom_point() +
+  labs(x = "Square feet", y = "Total Energy Consumption in July") +
+  ggtitle("Square feet vs. Total Energy Consumption (July)") +
+  ylim(y_limits)
+
+# Plot 2: Total Energy Consumption vs. Square feet after temperature increase
+ggplot(temp_incr, aes(x = factor(in.sqft), y = predicted_total_energy)) +
+  geom_point() +
+  labs(x = "Square feet", y = "Total Predicted Energy Consumption in July") +
+  ggtitle("Square feet vs. Total Predicted Energy Consumption in July(After temp increase)") +
+  ylim(y_limits)
+
+```
+
+
+
+
+
+
+```{r}
+# Plot 1: Total Energy Consumption vs. Quarters before temperature increase
+ggplot(complete_merged_data, aes(x = factor(quarter), y = total_energy)) +
+ geom_bar(stat = "identity", fill = "green",na.rm = TRUE) +
+ labs(x = "Quarters", y = "Total Energy Consumption in July") +
+ ggtitle("Quarters vs. Total Energy Consumption (July)") +
+ ylim(y_limits)
+
+# Plot 2: Total Energy Consumption vs. Quarters after temperature increase
+ggplot(temp_incr, aes(x = factor(quarter), y = predicted_total_energy)) +
+ geom_bar(stat = "identity", fill = "skyblue",na.rm = TRUE) +
+ labs(x = "Quarters", y = "Total Predicted Energy Consumption in July") +
+ ggtitle("Quarters vs. Total Predicted Energy Consumption in July(After temp increase)") +
+ ylim(y_limits)
+
+
+```
+
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+
+# Simulated data for demonstration
+# Replace this with your actual data loading method
+future_energy_predictions <- data.frame(
+  date_time = seq(as.POSIXct('2024-01-01 00:00:00'), length.out = 24, by = 'hour'),
+  region = rep(c('North', 'South', 'East', 'West'), each = 6),
+  building_type = rep(c('Residential', 'Commercial'), times = 12),
+  energy_demand = rnorm(24, mean = 5000, sd = 1500)
+)
+
+# Extracting hour from date_time
+future_energy_predictions <- future_energy_predictions %>%
+  mutate(hour = hour(date_time))
+
+# Grouping data by hour, region, and building type to find peak demand
+peak_demand_analysis <- future_energy_predictions %>%
+  group_by(hour, region, building_type) %>%
+  summarise(peak_demand = max(energy_demand), .groups = 'drop')
+
+# Display the head of the aggregated data to check
+print(head(peak_demand_analysis))
+
+
+
+# Plotting peak demand across hours for different regions and building types using bar graph
+ggplot(peak_demand_analysis, aes(x = hour, y = peak_demand, fill = region)) +
+  geom_col(position = "dodge") +  # Use geom_col() for bar graph
+  facet_wrap(~ building_type, scales = "free_y") +
+  labs(title = "Future Hourly Peak Energy Demand by Region and Building Type",
+       x = "Hour of Day",
+       y = "Peak Energy Demand (kWh)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+# This plot differentiates the data by building type in separate panels and uses line color to distinguish regions.
+
+```
+
+
+
+
+
+
